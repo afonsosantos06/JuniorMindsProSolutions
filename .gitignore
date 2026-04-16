@@ -3,3 +3,9 @@ venv/
 
 # Environment Variables
 .env
+.python-version
+pyproject.toml
+uv.lock
+
+
+AGENTS.md
