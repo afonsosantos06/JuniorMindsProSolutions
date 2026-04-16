@@ -1,4 +1,5 @@
 import os
+import json
 from typing import TypedDict, Optional, Dict, Any
 from pydantic import BaseModel, Field
 
@@ -6,6 +7,7 @@ from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, SystemMessage
 from langfuse import observe
 from langfuse.langchain import CallbackHandler
+from langchain_core.tools import tool, render_text_description
 
 from config import CHEAP_MODEL_ID, EXPENSIVE_MODEL_ID, OPENROUTER_BASE_URL
 from utils.observability import langfuse_client
@@ -61,8 +63,72 @@ investigator_llm = ChatOpenAI(
     temperature=0.3,
 ).with_structured_output(DeepInvestigatorResponse)
 
+# --- 4. Tools ---
+# Define any tools you want the agents to know about here.
 
-# --- 4. Node Functions (Decorated for Langfuse Tracing) ---
+@tool
+def get_user_info(iban: str) -> str:
+    """Fetch user information such as name, job, and full residence details based on their IBAN (sender_iban or recipient_iban)."""
+    try:
+        with open("The Truman Show - train/users.json", "r", encoding="utf-8") as f:
+            users = json.load(f)
+        user = next((u for u in users if u.get("iban") == iban), None)
+        return json.dumps(user) if user else f"User with IBAN {iban} not found."
+    except Exception as e:
+        return f"Error: {e}"
+
+@tool
+def get_user_location_history(user_id: str) -> str:
+    """Fetch location history for a user based on their user_id (same as sender_id or recipient_id)."""
+    try:
+        with open("The Truman Show - train/locations.json", "r", encoding="utf-8") as f:
+            locations = json.load(f)
+        user_locs = [loc for loc in locations if loc.get("biotag") == user_id]
+        return json.dumps(user_locs) if user_locs else f"No location history found for {user_id}."
+    except Exception as e:
+        return f"Error: {e}"
+
+@tool
+def get_user_mails(iban: str) -> str:
+    """Fetch emails associated with a user based on their IBAN (sender_iban or recipient_iban)."""
+    try:
+        with open("The Truman Show - train/users.json", "r", encoding="utf-8") as f:
+            users = json.load(f)
+        user = next((u for u in users if u.get("iban") == iban), None)
+        if not user:
+            return f"User with IBAN {iban} not found."
+        
+        first_name = user.get("first_name", "")
+        last_name = user.get("last_name", "")
+        with open("The Truman Show - train/mails.json", "r", encoding="utf-8") as f:
+            mails = json.load(f)
+        user_mails = [m for m in mails if first_name in m.get("mail", "") and last_name in m.get("mail", "")]
+        return json.dumps(user_mails) if user_mails else f"No emails found for {first_name} {last_name}."
+    except Exception as e:
+        return f"Error: {e}"
+
+@tool
+def get_user_sms(iban: str) -> str:
+    """Fetch SMS history associated with a user based on their IBAN (sender_iban or recipient_iban)."""
+    try:
+        with open("The Truman Show - train/users.json", "r", encoding="utf-8") as f:
+            users = json.load(f)
+        user = next((u for u in users if u.get("iban") == iban), None)
+        if not user:
+            return f"User with IBAN {iban} not found."
+        
+        first_name = user.get("first_name", "")
+        with open("The Truman Show - train/sms.json", "r", encoding="utf-8") as f:
+            sms_data = json.load(f)
+        user_sms = [s for s in sms_data if first_name in s.get("sms", "")]
+        return json.dumps(user_sms) if user_sms else f"No SMS found for {first_name}."
+    except Exception as e:
+        return f"Error: {e}"
+
+TOOLS = [get_user_info, get_user_location_history, get_user_mails, get_user_sms]
+tools_description = render_text_description(TOOLS) if TOOLS else ""
+
+# --- 5. Node Functions (Decorated for Langfuse Tracing) ---
 
 @observe(name="TriageAgentNode")
 def call_triage_agent(state: AgentState) -> AgentState:
@@ -77,8 +143,13 @@ def call_triage_agent(state: AgentState) -> AgentState:
 Analyze the following transaction and determine if it is FRAUD, LEGITIMATE, or if you need to ESCALATE because it is complex or high-value.
 Transaction Data: {state["transaction"]}
 """
+    
+    system_content = "You enforce banking security. Be fast and strict."
+    if tools_description:
+        system_content += f"\n\n--- AVAILABLE TOOLS ---\nYou can use the following tools to gather more information before making a final decision:\n{tools_description}\n\nIMPORTANT: To use a tool, you must explicitly state the tool name and the exact arguments to pass in your 'reason_spotted' field."
+
     messages = [
-        SystemMessage(content="You enforce banking security. Be fast and strict."),
+        SystemMessage(content=system_content),
         HumanMessage(content=prompt)
     ]
     
@@ -110,8 +181,12 @@ Take your time to analyze every single anomaly.
 Transaction Data: {state["transaction"]}
 Previous Triage Notes: {state.get("reasoning", "None")}
 """
+    system_content = "You are the ultimate authority on fraud. Analyze deeply and provide a 100% final decision."
+    if tools_description:
+        system_content += f"\n\n--- AVAILABLE TOOLS ---\nYou can use the following tools to gather more information before making a final decision:\n{tools_description}\n\nIMPORTANT: To use a tool, you must explicitly state the tool name and the exact arguments to pass in your 'detailed_chain_of_thought' field."
+
     messages = [
-        SystemMessage(content="You are the ultimate authority on fraud. Analyze deeply and provide a 100% final decision."),
+        SystemMessage(content=system_content),
         HumanMessage(content=prompt)
     ]
     

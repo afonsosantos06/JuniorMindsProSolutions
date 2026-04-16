@@ -46,7 +46,20 @@ def process_dataset(filepath: str, dataset_name: str) -> None:
         
         # Initial State
         initial_state = {
-            "transaction": transaction,
+            "transaction": {
+                "transaction_id": row.get("transaction_id"),
+                "sender_id": row.get("sender_id"),
+                "recipient_id": row.get("recipient_id"),
+                "transaction_type": row.get("transaction_type"),
+                "amount": row.get("amount"),
+                "location": row.get("location"),
+                "payment_method": row.get("payment_method"),
+                "sender_iban": row.get("sender_iban"),
+                "recipient_iban": row.get("recipient_iban"),
+                "balance_after": row.get("balance_after"),
+                "description": row.get("description"),
+                "timestamp": row.get("timestamp")
+            },
             "session_id": session_id,
             "heuristic_passed": False,
             "final_decision": None,
@@ -79,7 +92,7 @@ def process_dataset(filepath: str, dataset_name: str) -> None:
 
 if __name__ == "__main__":
     # Simulate processing the first Training Dataset
-    process_dataset("data/dataset_1.csv", "dataset_1")
+    process_dataset("data/transactions.csv", "dataset_1")
     
     # Once the real data drops, duplicate the call:
     # process_dataset("data/dataset_2.csv", "dataset_2")
