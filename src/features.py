@@ -198,3 +198,48 @@ def get_nearest_location_pings(
                 after = ping
 
     return before, after
+
+
+# ---------------------------------------------------------------------------
+# ML Feature Extraction
+# ---------------------------------------------------------------------------
+
+def build_ml_features(tx: dict) -> list[float]:
+    """
+    Transforms a single transaction dictionary into a numeric feature vector
+    suitable for Scikit-Learn KMeans anomaly clustering.
+    Returns: [log_amount, hour_scaled, ratio_mean, is_new_recipient]
+    """
+    import math
+    from src.features import get_behaviour_profile
+
+    # 1. Normalized Amount
+    amount = float(tx.get("amount", 0.0))
+    # use log1p to compress huge variance
+    f_amount = math.log1p(max(0, amount))
+
+    # 2. Extract Hour Mapping
+    ts_raw = tx.get("timestamp")
+    f_hour = 12.0 # default to noon
+    if ts_raw:
+        try:
+            f_hour = float(pd.Timestamp(ts_raw).hour)
+        except Exception:
+            pass
+
+    # 3. Ratio to user's mean / New recipient flag
+    f_ratio = 1.0
+    f_new_recip = 0.0
+
+    sender_id = tx.get("sender_id", "")
+    recipient_id = tx.get("recipient_id", "")
+    profile = get_behaviour_profile(sender_id)
+
+    if profile:
+        if profile.amount_mean > 0:
+            # capped ratio to avoid explosion with ML
+            f_ratio = min(10.0, amount / profile.amount_mean)
+        if recipient_id and recipient_id not in profile.known_recipients:
+            f_new_recip = 1.0
+
+    return [f_amount, f_hour, f_ratio, f_new_recip]

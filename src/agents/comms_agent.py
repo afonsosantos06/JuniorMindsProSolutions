@@ -1,68 +1,41 @@
-"""CommsAgent: correlates phishing communications with transactions."""
+"""CommsAgent: correlates phishing communications with transactions securely without LLM bias."""
 import json
-
 import pandas as pd
 from langchain.tools import tool
-from langchain_core.messages import HumanMessage, SystemMessage
 
-from src.config import get_model
 from src.features import get_phishing_signals
-
-_SYSTEM_PROMPT = """You are a communications-based fraud analyst.
-You receive recent phishing attempts targeting a user and a current transaction.
-Determine if social engineering may have caused this fraudulent transaction.
-
-Key signals of phishing-induced fraud:
-- HIGH-severity phishing (fake bank/PayPal/Amazon security URLs) within 14 days of tx
-- Platform match: phishing target matches the transaction platform/description
-- User profile described as phishing-susceptible increases risk
-
-Important: Not every transaction after phishing is fraud. Look for platform correlation.
-A PayPal phishing SMS followed by a PayPal payment is much more suspicious than
-a PayPal phishing SMS followed by a grocery purchase.
-
-Respond ONLY with valid JSON (no extra text):
-{"verdict": "FRAUD|LEGIT|UNCERTAIN", "confidence": 0.0-1.0, "reasoning": "one sentence", "matched_phishing": []}"""
-
 
 @tool
 def check_comms(transaction_json: str) -> str:
     """
-    Check if sender recently received phishing messages correlated with
-    this transaction type or platform.
-
-    Input: JSON string with keys: transaction_id, sender_id, amount,
-           transaction_type, description, recipient_id, timestamp.
-    Output: JSON string with keys: verdict (FRAUD/LEGIT/UNCERTAIN),
-            confidence (0-1), reasoning (1 sentence), matched_phishing (list).
-    Call this for: e-commerce transactions, unusual transfers to new recipients,
-    PayPal/Amazon/bank-related descriptions, or direct debits at unusual hours.
+    Check if sender recently received phishing messages correlated with this transaction type or platform.
+    Outputs strict Risk Score based on Phishing Severity and recency.
+    
+    Input: JSON string with keys: transaction_id, sender_id, amount, transaction_type, timestamp.
+    Output: {"risk_score": 0-100, "trigger": "string", "reasoning": "string"}
+    Call this: ALWAYS for e-commerce, unusual transfers, direct_debit.
     """
     from src.data_loader import get_store
     store = get_store()
     tx = json.loads(transaction_json)
     sender_id = tx.get("sender_id", "")
 
-    # Only citizen senders have communications
     if sender_id not in store.users_by_biotag:
         return json.dumps({
-            "verdict": "UNCERTAIN",
-            "confidence": 0.5,
-            "reasoning": "No communications data available for this sender.",
-            "matched_phishing": [],
+            "risk_score": 10,
+            "trigger": "CORPORATE_ACCOUNT",
+            "reasoning": "Corporate/Employer account. No communications data available.",
         })
 
     signals = get_phishing_signals(sender_id)
 
     if not signals.phishing_events:
         return json.dumps({
-            "verdict": "LEGIT",
-            "confidence": 0.7,
+            "risk_score": 0,
+            "trigger": "NO_PHISHING",
             "reasoning": "No phishing communications detected for this user.",
-            "matched_phishing": [],
         })
 
-    # Filter to events within 30 days before the transaction
     ts_raw = tx.get("timestamp")
     nearby_events = []
     if ts_raw:
@@ -84,53 +57,49 @@ def check_comms(transaction_json: str) -> str:
 
     if not nearby_events:
         return json.dumps({
-            "verdict": "LEGIT",
-            "confidence": 0.6,
+            "risk_score": 0,
+            "trigger": "NO_RECENT_PHISHING",
             "reasoning": "No phishing events found within 30 days before this transaction.",
-            "matched_phishing": [],
         })
 
-    # Build context for LLM
+    # Hard rules / Risk assignment
+    max_risk = 0
+    trigger = "MILD_PHISHING"
+    reasoning = "Phishing detected but low severity or old."
+
+    for e in nearby_events:
+        sev = e.get("severity", "LOW")
+        days = e.get("days_before_tx", 30)
+        
+        # Calculate event risk
+        event_risk = 0
+        if sev == "HIGH":
+            if days <= 2:
+                event_risk = 95
+            elif days <= 14:
+                event_risk = 80
+            elif days <= 30:
+                event_risk = 40
+        elif sev == "MEDIUM":
+            if days <= 3:
+                event_risk = 60
+            elif days <= 14:
+                event_risk = 40
+                
+        if event_risk > max_risk:
+            max_risk = event_risk
+            trigger = f"PHISHING_CORRELATION_{sev}"
+            reasoning = f"{sev} severity '{e['platform']}' phishing message received {days} days before transaction."
+
+    # Susceptibility modifier
     user = store.users_by_biotag.get(sender_id, {})
-    desc_hint = ""
     if "susceptible" in user.get("description", "").lower() or "confiance" in user.get("description", "").lower():
-        desc_hint = " (User is known to be susceptible to phishing.)"
+        if max_risk > 0:
+            max_risk = min(100, max_risk + 15)
+            reasoning += " (User is known to be highly susceptible to phishing)."
 
-    events_summary = "\n".join(
-        f"  - [{e['severity']}] {e['platform']} phishing {e['days_before_tx']}d before tx: {e['text_snippet'][:100]}"
-        for e in nearby_events[:5]  # cap at 5 events to control tokens
-    )
-
-    context = (
-        f"Transaction: {tx.get('transaction_type')}, Amount: {tx.get('amount')}, "
-        f"Description: {tx.get('description') or 'N/A'}, Recipient: {tx.get('recipient_id')}{desc_hint}\n\n"
-        f"Phishing events within 30 days before this transaction:\n{events_summary}"
-    )
-
-    model = get_model(temperature=0.1)
-    response = model.invoke([
-        SystemMessage(content=_SYSTEM_PROMPT),
-        HumanMessage(content=context),
-    ])
-
-    content = response.content.strip()
-    try:
-        result = json.loads(content)
-        result["matched_phishing"] = nearby_events[:5]
-        return json.dumps(result)
-    except json.JSONDecodeError:
-        import re
-        m = re.search(r'\{[^{}]+\}', content, re.DOTALL)
-        if m:
-            try:
-                result = json.loads(m.group())
-                result["matched_phishing"] = nearby_events[:5]
-                return json.dumps(result)
-            except Exception:
-                pass
-        return json.dumps({
-            "verdict": "UNCERTAIN",
-            "confidence": 0.6,
-            "reasoning": f"Phishing events found but LLM parse failed: {content[:100]}",
-            "matched_phishing": nearby_events[:3],
-        })
+    return json.dumps({
+        "risk_score": max_risk,
+        "trigger": trigger,
+        "reasoning": reasoning,
+    })

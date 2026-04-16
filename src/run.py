@@ -1,6 +1,7 @@
 """CLI entrypoint: python -m src.run --input data/ --output submissions/level_1.txt"""
 import argparse
 import sys
+import os
 from pathlib import Path
 
 
@@ -76,7 +77,8 @@ def main():
 
     # --- Write output ---
     output_path = Path(args.output)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
+    if not output_path.parent.exists():
+        os.makedirs(output_path.parent, exist_ok=True)
     output_path.write_text("\n".join(fraud_ids) + ("\n" if fraud_ids else ""))
     print(f"Output written to: {args.output}")
 

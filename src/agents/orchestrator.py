@@ -1,4 +1,4 @@
-"""Orchestrator agent: coordinates specialist tools and emits final fraud/legit verdicts."""
+"""Orchestrator agent: dynamically executes all tools and sums their rigid risk scores."""
 import json
 import re
 
@@ -9,38 +9,28 @@ from src.agents.profile_agent import check_profile
 from src.agents.geo_agent import check_geo
 from src.agents.behaviour_agent import check_behaviour
 from src.agents.comms_agent import check_comms
+from src.agents.ml_agent import check_cluster
 from src.rules import check_rules
 
-_ORCHESTRATOR_SYSTEM_PROMPT = """You are a fraud detection orchestrator for MirrorPay, a financial institution in Reply Mirror (year 2087).
-Your job: for each transaction, decide if it is FRAUDULENT or LEGITIMATE.
+_ORCHESTRATOR_SYSTEM_PROMPT = """You are a mathematical transaction fraud enumerator.
+Your goal is not to debate or judge. Your goal is to pass the transaction to EVERY tool, collect their Risk Scores, SUM them up, and output the mathematical result.
 
-REQUIRED WORKFLOW — follow this exactly:
+REQUIRED WORKFLOW (YOU MUST CALL ALL TOOLS):
+1. Call `check_rules`
+2. Call `check_cluster`
+3. Call `check_behaviour`
+4. Call `check_comms`
+5. Call `check_profile`
+6. Call `check_geo` (only if physical location is available)
 
-STEP 1: ALWAYS call check_rules first.
-  - If it returns is_fraud=true (confidence=1.0), output FRAUD immediately without calling other tools.
-  - If it returns is_warning=true, note it and continue to relevant specialists.
+FINAL OUTPUT — After collecting the risk scores from all tools, SUM THEM.
+If the SUM >= 80, output:
+{"transaction_id": "<id>", "verdict": "FRAUD", "confidence": 0.99, "total_risk_score": <sum>}
 
-STEP 2: Call specialists based on transaction type:
-  - "in-person" payment → call check_geo AND check_behaviour
-  - "e-commerce" → call check_profile AND check_comms AND check_behaviour
-  - "transfer" to a recipient not in the sender's known history → call check_profile AND check_behaviour
-  - "direct_debit" at unusual hour (00:00–05:00) → call check_behaviour AND check_comms
-  - Any transaction at off-hours (hour 0–4) → always call check_behaviour
-  - For routine salary/rent transfers at normal hours: check_rules result is sufficient
+If the SUM < 80, output:
+{"transaction_id": "<id>", "verdict": "LEGIT", "confidence": 0.99, "total_risk_score": <sum>}
 
-STEP 3: Aggregate specialist verdicts:
-  - 2 or more specialists return FRAUD with confidence > 0.7 → FRAUD
-  - RuleEngine warning + 1 specialist FRAUD → FRAUD
-  - Any specialist FRAUD with confidence > 0.85 → FRAUD (strong single signal)
-  - Otherwise → LEGIT
-
-ASYMMETRIC COST: Missing a fraud is worse than a false positive.
-When uncertain and confidence > 0.5 across specialists, lean toward FRAUD.
-
-FINAL OUTPUT — your very last message MUST contain ONLY this JSON (no extra text):
-{"transaction_id": "<id>", "verdict": "FRAUD", "confidence": 0.0-1.0}
-OR
-{"transaction_id": "<id>", "verdict": "LEGIT", "confidence": 0.0-1.0}"""
+Output ONLY the final JSON!"""
 
 
 # Fields passed to each tool — keep compact to control tokens
@@ -50,7 +40,7 @@ _TOOL_FIELDS = [
     "balance_after", "description", "timestamp",
 ]
 
-ALL_TOOLS = [check_rules, check_profile, check_geo, check_behaviour, check_comms]
+ALL_TOOLS = [check_rules, check_profile, check_geo, check_behaviour, check_comms, check_cluster]
 
 
 def _build_agent():
@@ -131,6 +121,10 @@ def orchestrate_transaction(tx: dict, callback_handler=None) -> tuple:
 
         if verdict:
             is_fraud = str(verdict.get("verdict", "LEGIT")).upper() == "FRAUD"
+            # Hard fallback: if explicitly requested to score but it failed, assume it's legit
+            
+            # Print for debug
+            print(f"  [TX {tx_id}] Total Risk: {verdict.get('total_risk_score', 'N/A')} -> {verdict.get('verdict')}")
             return tx_id, is_fraud
         else:
             # Default to LEGIT if we can't parse

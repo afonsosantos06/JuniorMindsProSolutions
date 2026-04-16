@@ -1,87 +1,65 @@
-"""ProfileAgent: checks if a transaction is consistent with the user's financial profile."""
+"""ProfileAgent: checks if a transaction is consistent with the user's financial profile mathematically."""
 import json
-
 from langchain.tools import tool
-from langchain_core.messages import HumanMessage, SystemMessage
-
-from src.config import get_model
 from src.data_loader import get_store
-
-_SYSTEM_PROMPT = """You are a financial profile analyst for fraud detection.
-Given a user's salary, job, city, and a transaction, decide if the transaction is plausible for that person.
-
-Key signals of fraud:
-- Amount is much larger than expected given monthly salary (monthly salary ≈ annual/12)
-- Merchant or service category inconsistent with the user's job and lifestyle
-- Transaction description inconsistent with known user habits
-- Employer/non-citizen senders (no profile) are treated as UNCERTAIN
-
-Respond ONLY with valid JSON (no extra text):
-{"verdict": "FRAUD|LEGIT|UNCERTAIN", "confidence": 0.0-1.0, "reasoning": "one sentence"}"""
-
 
 @tool
 def check_profile(transaction_json: str) -> str:
     """
     Assess if this transaction is consistent with the sender's financial profile.
+    Outputs strict Risk Score based on Monthly Salary ratio anomalies.
 
-    Input: JSON string with keys: transaction_id, sender_id, amount,
-           transaction_type, location, description, recipient_id.
-    Output: JSON string with keys: verdict (FRAUD/LEGIT/UNCERTAIN),
-            confidence (0-1), reasoning (1 sentence).
-    Call this for: e-commerce transactions, unusually large amounts,
-    transactions with merchant categories that may not fit the user's profile.
+    Input: JSON string with keys: transaction_id, sender_id, amount, transaction_type, location, description, recipient_id.
+    Output: {"risk_score": 0-100, "trigger": "string", "reasoning": "string"}
+    Call this: ALWAYS to analyze wealth-to-spend ratios.
     """
     store = get_store()
     tx = json.loads(transaction_json)
     sender_id = tx.get("sender_id", "")
+    
+    # Retrieve amount safely
+    try:
+        amount = float(tx.get("amount", 0))
+    except (TypeError, ValueError):
+        amount = 0.0
 
     user = store.users_by_biotag.get(sender_id)
     if not user:
+        # Employers transfer huge amounts for payroll, which is normal.
         return json.dumps({
-            "verdict": "UNCERTAIN",
-            "confidence": 0.5,
-            "reasoning": "No user profile available for this sender (employer or unknown).",
+            "risk_score": 20,
+            "trigger": "UNLISTED_SENDER",
+            "reasoning": "No user profile available (likely employer). Treated as baseline risk.",
         })
 
-    # Build compact user context — NOT the full users.json
-    monthly_salary = round(user["salary"] / 12, 0)
-    user_ctx = (
-        f"User: {user['first_name']} {user['last_name']}, "
-        f"Job: {user['job']}, "
-        f"Annual salary: {user['salary']} (monthly ≈ {monthly_salary}), "
-        f"City: {user['residence']['city']}"
-    )
+    monthly_salary = round(user.get("salary", 15000) / 12, 0)
+    risk = 0
+    trigger = "PLAUSIBLE_LIFESTYLE"
+    anomalies = []
 
-    tx_ctx = (
-        f"Transaction: {tx.get('transaction_type')}, "
-        f"Amount: {tx.get('amount')}, "
-        f"Description: {tx.get('description') or 'N/A'}, "
-        f"Location: {tx.get('location') or 'N/A'}, "
-        f"Recipient: {tx.get('recipient_id')}"
-    )
-
-    model = get_model(temperature=0.1)
-    response = model.invoke([
-        SystemMessage(content=_SYSTEM_PROMPT),
-        HumanMessage(content=f"{user_ctx}\n{tx_ctx}"),
-    ])
-
-    content = response.content.strip()
-    # Try to parse; if it fails, return UNCERTAIN
-    try:
-        result = json.loads(content)
-        return json.dumps(result)
-    except json.JSONDecodeError:
-        import re
-        m = re.search(r'\{[^{}]+\}', content, re.DOTALL)
-        if m:
-            try:
-                return json.dumps(json.loads(m.group()))
-            except Exception:
-                pass
+    # Extremely high ratio
+    if monthly_salary > 0:
+        spend_ratio = amount / monthly_salary
+        if spend_ratio > 0.5:
+            risk += 80
+            trigger = "CRITICAL_SPEND_RATIO"
+            anomalies.append(f"Spends > 50% of monthly salary in one tx ({spend_ratio*100:.0f}%)")
+        elif spend_ratio > 0.25:
+            risk += 40
+            trigger = "HIGH_SPEND_RATIO"
+            anomalies.append(f"Spends > 25% of monthly salary in one tx ({spend_ratio*100:.0f}%)")
+            
+    risk = min(100, risk)
+    
+    if risk == 0:
         return json.dumps({
-            "verdict": "UNCERTAIN",
-            "confidence": 0.5,
-            "reasoning": f"Could not parse LLM response: {content[:100]}",
+            "risk_score": 0,
+            "trigger": trigger,
+            "reasoning": "Transaction amount is fully aligned with user's financial profile.",
+        })
+    else:
+        return json.dumps({
+            "risk_score": risk,
+            "trigger": trigger,
+            "reasoning": f"Profile deviations detected: {'; '.join(anomalies)}.",
         })
