@@ -39,6 +39,4 @@ def get_callback_handler(session_id: str | None = None) -> CallbackHandler:
     Create a Langfuse CallbackHandler for instrumenting LangChain LLM calls.
     Pass session_id via metadata tagging after creation if needed.
     """
-    if session_id:
-        return CallbackHandler(session_id=session_id)
     return CallbackHandler()

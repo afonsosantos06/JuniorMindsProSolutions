@@ -81,14 +81,14 @@ def _extract_verdict(text: str) -> dict | None:
             pass
     return None
 
-
-def orchestrate_transaction(tx: dict, callback_handler=None) -> tuple:
+def orchestrate_transaction(tx: dict, callback_handler=None, session_id=None) -> tuple:
     """
     Analyze a single transaction and return (transaction_id, is_fraud).
 
     Args:
         tx: dict with transaction fields
         callback_handler: optional Langfuse CallbackHandler for tracing
+        session_id: optional session id for tagging
 
     Returns:
         (transaction_id: str, is_fraud: bool)
@@ -106,6 +106,10 @@ def orchestrate_transaction(tx: dict, callback_handler=None) -> tuple:
     config = {}
     if callback_handler:
         config["callbacks"] = [callback_handler]
+    
+    # Langfuse v4 SDK reads session_id from Langchain metadata tag
+    if session_id:
+        config.setdefault("metadata", {})["langfuse_session_id"] = session_id
 
     agent = _get_agent()
 

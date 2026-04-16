@@ -58,7 +58,7 @@ def main():
 
     for i, row in store.transactions.iterrows():
         tx = row.to_dict()
-        tx_id, is_fraud = orchestrate_transaction(tx, callback_handler=callback_handler)
+        tx_id, is_fraud = orchestrate_transaction(tx, callback_handler=callback_handler, session_id=session_id)
 
         if is_fraud:
             fraud_ids.append(tx_id)
