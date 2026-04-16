@@ -8,7 +8,6 @@ from langfuse import observe
 from langfuse.langchain import CallbackHandler
 
 from config import CHEAP_MODEL_ID, EXPENSIVE_MODEL_ID, OPENROUTER_BASE_URL
-from utils.observability import langfuse_client
 
 # ==========================================
 # 🤖 MULTI-AGENT ARCHITECTURE
@@ -69,8 +68,6 @@ def call_triage_agent(state: AgentState) -> AgentState:
     """
     The Triage Agent is the first AI wall. It attempts to quickly classify the transaction.
     """
-    # Link this agent's action to the main dashboard session
-    langfuse_client.update_current_trace(session_id=state["session_id"])
     lf_handler = CallbackHandler()
 
     prompt = f"""You are a rapid transaction security scanner. 
@@ -83,7 +80,16 @@ Transaction Data: {state["transaction"]}
     ]
     
     # Invoke model and automatically capture tokens/cost using the Langfuse callback
-    response: TriageResponse = triage_llm.invoke(messages, config={"callbacks": [lf_handler]})
+    response: TriageResponse = triage_llm.invoke(
+        messages,
+        config={
+            "callbacks": [lf_handler],
+            "metadata": {
+                "langfuse_session_id": state["session_id"],
+                "langfuse_trace_name": "TriageAgentNode",
+            },
+        },
+    )
     
     # Update the overall state
     escalated = (response.decision == "ESCALATE")
@@ -101,7 +107,6 @@ def call_deep_investigator(state: AgentState) -> AgentState:
     """
     The Deep Investigator only runs if the transaction is highly suspicious or very expensive.
     """
-    langfuse_client.update_current_trace(session_id=state["session_id"])
     lf_handler = CallbackHandler()
 
     prompt = f"""You are an elite forensic fraud investigator. 
@@ -115,7 +120,16 @@ Previous Triage Notes: {state.get("reasoning", "None")}
         HumanMessage(content=prompt)
     ]
     
-    response: DeepInvestigatorResponse = investigator_llm.invoke(messages, config={"callbacks": [lf_handler]})
+    response: DeepInvestigatorResponse = investigator_llm.invoke(
+        messages,
+        config={
+            "callbacks": [lf_handler],
+            "metadata": {
+                "langfuse_session_id": state["session_id"],
+                "langfuse_trace_name": "DeepInvestigatorNode",
+            },
+        },
+    )
     
     return {
         **state,

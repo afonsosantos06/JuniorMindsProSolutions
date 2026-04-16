@@ -26,10 +26,22 @@ LOW_VALUE_THRESHOLD = 5.0
 CHEAP_MODEL_ID = "gpt-4o-mini"
 
 # The powerful, capable model used for Deep Investigation (high value or confusing cases).
-EXPENSIVE_MODEL_ID = "gpt-4o"
+EXPENSIVE_MODEL_ID = "gpt-4o-mini"
 
 # OpenRouter Base URL standard
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 
+# Network resiliency for model calls
+LLM_REQUEST_TIMEOUT_SECONDS = 60
+LLM_MAX_RETRIES = 2
+
 # Team identity for Langfuse tracking
 TEAM_NAME = os.getenv("TEAM_NAME", "JuniorMindsProSolutions")
+
+# 4. Dataset Configuration
+# Specify which dataset folder to process from the datasets/ directory
+# Examples: "Brave New World - train", "Deus Ex - train", "The Truman Show - train"
+DATASET_FOLDER = "Brave New World - train"
+
+# Enable or disable Langfuse tracing. Set to "false" to run without telemetry.
+LANGFUSE_ENABLED = os.getenv("LANGFUSE_ENABLED", "true").lower() == "true"

@@ -1,10 +1,10 @@
 import os
 import json
 import pandas as pd
-from typing import List, Dict
+from typing import List, Dict, Optional, Tuple
 
-from config import TEAM_NAME
-from utils.observability import langfuse_client, generate_session_id
+from config import TEAM_NAME, DATASET_FOLDER
+from utils.observability import generate_session_id
 from workflow import app
 
 # ==========================================
@@ -13,27 +13,66 @@ from workflow import app
 # Example usage: python main.py
 # ==========================================
 
-def load_dataset(filepath: str) -> pd.DataFrame:
-    """Load your challenge CSV dataset."""
+def load_json_file(filepath: str) -> Optional[Dict]:
+    """Load a JSON file safely, return None if file doesn't exist."""
     if not os.path.exists(filepath):
-        print(f"⚠️ Mocking dataset since {filepath} does not exist.")
-        # Create a mock dataset if it doesn't exist to test the skeleton
-        return pd.DataFrame([
-            {"transaction_id": "T001", "amount": 2.50, "location": "Lisbon"}, # Should hit heuristic
-            {"transaction_id": "T002", "amount": 150.0, "location": "Unknown"}, # Should hit Triage
-            {"transaction_id": "T003", "amount": 5000.0, "location": "Offshore"} # Should hit Deep Investigator
-        ])
-    return pd.read_csv(filepath)
+        return None
+    try:
+        with open(filepath, 'r') as f:
+            return json.load(f)
+    except (json.JSONDecodeError, IOError) as e:
+        print(f"⚠️ Error loading {filepath}: {e}")
+        return None
 
-def process_dataset(filepath: str, dataset_name: str) -> None:
+def load_dataset(dataset_name: str, datasets_dir: str = "datasets") -> Tuple[pd.DataFrame, Dict]:
+    """
+    Load a complete dataset from the datasets folder structure.
+    Returns (transactions_df, metadata_dict) where metadata includes users, locations, mails, sms.
+    """
+    dataset_path = os.path.join(datasets_dir, dataset_name)
+    
+    if not os.path.exists(dataset_path):
+        print(f"Dataset {dataset_name} not found.")
+        return pd.DataFrame(), {}
+    
+    # Load transactions
+    transactions_file = os.path.join(dataset_path, "transactions.csv")
+    if not os.path.exists(transactions_file):
+        print(f"❌ No transactions.csv found in {dataset_path}")
+        return pd.DataFrame(), {}
+    
+    transactions_df = pd.read_csv(transactions_file)
+    print(f"📊 Loaded {len(transactions_df)} transactions from {dataset_name}")
+    
+    # Load metadata files
+    metadata = {
+        "users": load_json_file(os.path.join(dataset_path, "users.json")),
+        "locations": load_json_file(os.path.join(dataset_path, "locations.json")),
+        "mails": load_json_file(os.path.join(dataset_path, "mails.json")),
+        "sms": load_json_file(os.path.join(dataset_path, "sms.json")),
+    }
+    
+    # Log what was loaded
+    loaded_files = [k for k, v in metadata.items() if v is not None]
+    if loaded_files:
+        print(f"📄 Loaded metadata: {', '.join(loaded_files)}")
+    
+    return transactions_df, metadata
+
+def process_dataset(dataset_name: str) -> None:
     print(f"🚀 Starting processing for {dataset_name}...")
     
     # 1. Generate the crucial Session ID for grading
     session_id = generate_session_id(dataset_name)
     print(f"🆔 Session ID for this run: {session_id}")
     
-    # 2. Load the data
-    df = load_dataset(filepath)
+    # 2. Load the data with metadata
+    df, metadata = load_dataset(dataset_name)
+    if df.empty:
+        print(f"❌ Failed to load dataset {dataset_name}")
+        return
+    
+    flagged_transactions = []
     results = []
     
     # 3. Process row by row
@@ -44,9 +83,22 @@ def process_dataset(filepath: str, dataset_name: str) -> None:
         
         print(f"Analyzing {tx_id} (Amount: {transaction.get('amount')})")
         
-        # Initial State
+        # Initial State with detailed transaction structure
         initial_state = {
-            "transaction": transaction,
+            "transaction": {
+                "transaction_id": row.get("transaction_id"),
+                "sender_id": row.get("sender_id"),
+                "recipient_id": row.get("recipient_id"),
+                "transaction_type": row.get("transaction_type"),
+                "amount": row.get("amount"),
+                "location": row.get("location"),
+                "payment_method": row.get("payment_method"),
+                "sender_iban": row.get("sender_iban"),
+                "recipient_iban": row.get("recipient_iban"),
+                "balance_after": row.get("balance_after"),
+                "description": row.get("description"),
+                "timestamp": row.get("timestamp")
+            },
             "session_id": session_id,
             "heuristic_passed": False,
             "final_decision": None,
@@ -67,19 +119,22 @@ def process_dataset(filepath: str, dataset_name: str) -> None:
             "reasoning": final_state['reasoning'],
         })
         
+        # Track flagged transactions
+        if final_state['final_decision'] and final_state['final_decision'].lower() in ['fraud', 'suspicious', 'flagged']:
+            flagged_transactions.append(tx_id)
     
     # 4. Save results for the Reply submission portal
     out_file = f"submission_{dataset_name}.csv"
     pd.DataFrame(results).to_csv(out_file, index=False)
     print(f"\n✅ Finished processing {len(df)} transactions. Saved to {out_file}.")
     
-    # 5. VERY IMPORTANT: Flush Langfuse traces to ensure they reach the Reply dashboard
-    langfuse_client.flush()
-    print("✅ All telemetry data flushed to Langfuse.")
-
-if __name__ == "__main__":
-    # Simulate processing the first Training Dataset
-    process_dataset("data/dataset_1.csv", "dataset_1")
+    # 5. Save flagged transaction IDs (one per line)
+    flagged_file = f"flagged_{dataset_name}.txt"
+    with open(flagged_file, 'w') as f:
+        for tx_id in flagged_transactions:
+            f.write(f"{tx_id}\n")
+    print(f"🚩 Flagged {len(flagged_transactions)} transactions. Saved to {flagged_file}.")
     
-    # Once the real data drops, duplicate the call:
-    # process_dataset("data/dataset_2.csv", "dataset_2")
+if __name__ == "__main__":
+    # Process the dataset specified in config.py
+    process_dataset(DATASET_FOLDER)
